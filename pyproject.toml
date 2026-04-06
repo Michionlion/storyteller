@@ -1,0 +1,19 @@
+[project]
+name = "storyteller"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "Michionlion", email = "michionlion@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "openai>=2.30.0",
+    "pydantic>=2.12.5",
+    "pytest>=9.0.2",
+    "streamlit>=1.56.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

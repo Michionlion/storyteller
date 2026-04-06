@@ -1,29 +1,17 @@
-"""
-storyteller.py — A single-file AI story writing tool for rapid prototyping.
-
-Design goals:
-- One file, one dependency (Streamlit + openai)
-- No database, no complex architecture
-- Directly exposes the AI workflow
-- Still testable with pytest
-"""
-
-import os
-import streamlit as st
-from typing import Optional, Dict, List
-from pydantic import BaseModel
-
+from typing import Dict, List, Any, Optional
+from pydantic import BaseModel, Field
 
 # =============================================================================
-# 📋 Data Models (Replaces the entire `core/models.py` layer)
+# 📋 Data Models
 # =============================================================================
 
 class Beat(BaseModel):
     """A single scene/section in the story."""
     title: str
     content: str = ""
-    critique: str = ""  # Store critique for the beat
     id: str = ""
+    critique: Optional[Dict[str, Any]] = None
+    pinned_passages: List[Dict[str, str]] = Field(default_factory=list)
 
     def dict(self, **kwargs):
         return super().dict(by_alias=False, **kwargs)
@@ -32,6 +20,7 @@ class Beat(BaseModel):
 class StoryBible(BaseModel):
     """Shared narrative facts for continuity."""
     facts: List[Dict[str, str]] = []
+    prohibited_elements: List[str] = Field(default_factory=list) # Global "Don't use" list
 
 
 class StoryProject(BaseModel):
@@ -45,59 +34,47 @@ class StoryProject(BaseModel):
         parts = []
         if self.concept:
             parts.append(f"STORY CONCEPT: {self.concept}")
+        
+        if self.bible.prohibited_elements:
+            parts.append(f"PROHIBITED ELEMENTS (DO NOT USE THESE NAMES OR PHRASES): {', '.join(self.bible.prohibited_elements)}")
+
         for fact in self.bible.facts:
             parts.append(f"FACT: {fact['key']}: {fact['value']}")
+            
         for beat in self.beats:
             parts.append(f"BEAT: {beat.title}")
             parts.append(f"PROSE: {beat.content}")
             if beat.critique:
                 parts.append(f"CRITIQUE: {beat.critique}")
+            if beat.pinned_passages:
+                pinned = ", ".join([f"{p['text']} ({p['purpose']})" for p in beat.pinned_passages])
+                parts.append(f"PINNED PASSAGES (MUST PRESERVE): {pinned}")
+                
         return "\n\n".join(parts) if parts else ""
 
 
 # =============================================================================
-# 🧠 AI Prompt Definitions (Replaces `agents/orchestrator.py`)
+# 🧠 AI Prompt Definitions (Loaded from files)
 # =============================================================================
 
-def load_prompt(filename: str) -> str:
-    """Load a prompt from a markdown file in the prompts directory."""
-    prompts_dir = os.path.join(os.path.dirname(__file__), "prompts")
-    filepath = os.path.join(prompts_dir, filename)
+def load_prompt(name: str) -> str:
     try:
-        with open(filepath, "r", encoding="utf-8") as f:
+        with open(f"prompts/{name}.md", "r") as f:
             return f.read().strip()
     except FileNotFoundError:
-        st.error(f"Prompt file not found: {filepath}")
-        return f"[Prompt file '{filename}' not found]"
+        return f"Fallback prompt for {name}"
 
-
-# Default prompts (can be overridden by markdown files)
-DEFAULT_PROMPT_CONCEPT = """You are a creative story concept generator. Given a seed idea,
-generate a compelling story concept including genre, setting, characters, and
-a central conflict. Return structured JSON with keys: concept, genre, setting,
-characters, conflict."""
-
-DEFAULT_PROMPT_BEAT = """Given the story context and a beat title, write immersive prose
-for that beat. Show, don't tell. Include dialogue, sensory details, and
-emotional resonance. Return only the prose, no JSON."""
-
-DEFAULT_PROMPT_CRITIQUE = """Review the following prose and provide constructive criticism
-focused on: clarity, emotional impact, sensory details, pacing, and show-don't-tell.
-Return structured JSON with keys: overall_rating (1-10), strengths, weaknesses, suggestions."""
-
-# Load prompts from files, fallback to defaults if files don't exist
-PROMPT_CONCEPT = load_prompt("concept.md")
-PROMPT_BEAT = load_prompt("beat.md")
-PROMPT_CRITIQUE = load_prompt("critique.md")
+PROMPT_CONCEPT = load_prompt("concept")
+PROMPT_BEAT = load_prompt("beat")
+PROMPT_CRITIQUE = load_prompt("critique")
 
 
 # =============================================================================
-# 🔧 Core Service (Collapses `project_manager.py` + `story_creation_service.py`)
+# 🔧 Core Service
 # =============================================================================
 
 class Storyteller:
-    """All-in-one story creation service. No separation of concerns — that's
-    the tradeoff for a single-file prototype."""
+    """All-in-one story creation service."""
 
     def __init__(self, api_key: str):
         self.api_key = api_key
@@ -109,75 +86,78 @@ class Storyteller:
             prompt=f"{PROMPT_CONCEPT}\n\nSeed: {seed}",
             max_tokens=500
         )
-        self.project.concept = response["concept"]
+        self.project.concept = response.get("concept", "")
         return response
 
-    def generate_beat(self, title: str, critique: bool = False) -> str:
+    def generate_beat(self, title: str) -> str:
         """Step 2: Generate prose for a single beat, using all prior context."""
         context = self.project.get_context()
         prompt = f"{PROMPT_BEAT}\n\nContext:\n{context}\n\nBeat: {title}"
-        prose = self._call_ai(prompt=prompt, max_tokens=1000)
+        response = self._call_ai(prompt=prompt, max_tokens=1000)
+        
+        prose = response.get("prose", response.get("content", ""))
+        if not prose and isinstance(response, dict):
+            prose = str(response)
+        elif not prose:
+            prose = str(response)
+
         beat = Beat(title=title, content=prose, id=title.lower().replace(" ", "_"))
         self.project.beats.append(beat)
         return prose
 
     def critique_beat(self, beat_index: int) -> Dict:
-        """Step 3: Critique an existing beat and store the feedback."""
-        if beat_index < 0 or beat_index >= len(self.project.beats):
+        """Step 3: Critique an existing beat."""
+        if not (0 <= beat_index < len(self.project.beats)):
             raise ValueError("Invalid beat index")
         
         beat = self.project.beats[beat_index]
         context = self.project.get_context()
-        prompt = f"{PROMPT_CRITIQUE}\n\nStory Context:\n{context}\n\nBeat to Critique:\n{beat.title}\n\nProse:\n{beat.content}"
+        prompt = f"{PROMPT_CRITIQUE}\n\nContext:\n{context}\n\nProse to critique:\n{beat.content}"
         
         critique_data = self._call_ai(prompt=prompt, max_tokens=500)
         beat.critique = critique_data
-        
-        # Update the project with the critique
-        self.project.beats[beat_index] = beat
         return critique_data
 
-    def improve_beat(self, beat_index: int, critique: str, focus_areas: str) -> str:
-        """Step 4: Improve a beat based on critique and focus areas."""
-        if beat_index < 0 or beat_index >= len(self.project.beats):
+    def improve_beat(self, beat_index: int, critique_text: str, focus_areas: str) -> str:
+        """Step 4: Rewrite a beat based on critique and user focus."""
+        if not (0 <= beat_index < len(self.project.beats)):
             raise ValueError("Invalid beat index")
-        
+            
         beat = self.project.beats[beat_index]
         context = self.project.get_context()
         
-        prompt = f"""Given the following context, critique, and focus areas, rewrite the beat to address the feedback.
-
-Story Context:
-{context}
-
-Original Beat:
-{beat.title}
-
-Original Prose:
-{beat.content}
-
-Previous Critique:
-{critique}
-
-Focus Areas for Improvement:
-{focus_areas}
-
-Instructions:
-1. Address the specific issues mentioned in the critique
-2. Focus on the areas you've identified as needing improvement
-3. Keep the scene's purpose intact while enhancing the prose
-4. Return only the improved prose, no JSON."""
-
-        improved_prose = self._call_ai(prompt=prompt, max_tokens=1000)
+        prompt = (
+            f"{PROMPT_BEAT}\n\n"
+            f"CONTEXT:\n{context}\n\n"
+            f"CRITIQUE TO ADDRESS:\n{critique_text}\n\n"
+            f"USER FOCUS AREAS:\n{focus_areas}\n\n"
+            f"REWRITE THE FOLLOWING BEAT:\n{beat.content}"
+        )
         
-        # Update the beat with improved prose
-        beat.content = improved_prose
-        self.project.beats[beat_index] = beat
-        return improved_prose
+        response = self._call_ai(prompt=prompt, max_tokens=1000)
+        new_prose = response.get("prose", response.get("content", ""))
+        if not new_prose and isinstance(response, dict):
+            new_prose = str(response)
+        elif not new_prose:
+            new_prose = str(response)
+
+        beat.content = new_prose
+        return new_prose
+
+    def add_pinned_passage(self, beat_index: int, text: str, purpose: str):
+        """Add a passage that the AI must not change."""
+        if not (0 <= beat_index < len(self.project.beats)):
+            raise ValueError("Invalid beat index")
+        self.project.beats[beat_index].pinned_passages.append({"text": text, "purpose": purpose})
 
     def add_fact(self, key: str, value: str):
         """Add a narrative fact for continuity."""
         self.project.bible.facts.append({"key": key, "value": value})
+
+    def add_prohibited_element(self, element: str):
+        """Add a global element to avoid."""
+        if element and element not in self.project.bible.prohibited_elements:
+            self.project.bible.prohibited_elements.append(element)
 
     def get_project(self) -> StoryProject:
         return self.project
@@ -199,209 +179,157 @@ Instructions:
                     max_tokens=max_tokens,
                     temperature=0.8,
                 )
-                return json.loads(response.choices[0].message.content)
+                content = response.choices[0].message.content
+                
+                if "```json" in content:
+                    content = content.split("```json")[1].split("```")[0].strip()
+                elif "```" in content:
+                    parts = content.split("```")
+                    if len(parts) >= 3:
+                        try:
+                            json.loads(parts[1].strip())
+                            content = parts[1].strip()
+                        except:
+                            content = parts[1].strip()
+                
+                try:
+                    return json.loads(content)
+                except json.JSONDecodeError:
+                    return {"prose": content, "content": content}
+
             except Exception as e:
-                st.error(f"Attempt {attempt + 1} failed: {e}")
+                if attempt == 2:
+                    raise RuntimeError(f"AI calls failed after 3 attempts: {e}")
                 time.sleep(2)
-        raise RuntimeError("AI calls failed after 3 attempts")
+        return {}
 
 
 # =============================================================================
-# 💻 Streamlit UI (Replaces the Flet `ui/` layer)
+# 💻 Streamlit UI
 # =============================================================================
+
+import streamlit as st
 
 def main():
-    st.set_page_config(
-        page_title="Storyteller",
-        page_icon="📝",
-        layout="wide"
-    )
+    st.set_page_config(page_title="Storyteller", page_icon="📝", layout="wide")
 
     st.title("📝 Storyteller")
-    st.markdown("""
-        A minimal AI-powered story writing tool. Enter a seed idea, let AI
-        generate a concept, then step through beats to build your story.
-    """)
-
-    # --- Side panel (configuration) ---
-
+    
     with st.sidebar:
         st.header("Settings")
-        api_key = st.text_input(
-            "OpenAI API Key",
-            type="password",
-            help="Required to generate AI content"
-        )
-        if api_key:
-            st.success("API key accepted")
-
-    # --- Main flow ---
+        api_key = st.text_input("OpenAI API Key", type="password")
+        enable_critique = st.checkbox("Enable critique loop", value=True)
 
     if not api_key:
         st.warning("Please enter your OpenAI API key in the sidebar.")
         return
 
-    storyteller = Storyteller(api_key)
+    if "storyteller" not in st.session_state:
+        st.session_state["storyteller"] = Storyteller(api_key)
+    
+    storyteller = st.session_state["storyteller"]
 
-    # Step 1: Generate Concept
-    seed = st.text_area("1. Enter a story seed (one sentence or phrase)", "")
+    seed = st.text_area("1. Enter a story seed", "")
     if st.button("Generate Concept", disabled=not seed):
-        with st.spinner("Generating story concept..."):
+        with st.spinner("Generating concept..."):
             concept = storyteller.generate_concept(seed)
-        st.success("🎯 Story concept generated!")
-        st.markdown(f"## Concept")
-        st.markdown(f"**Genre:** {concept['genre']}")
-        st.markdown(f"**Setting:** {concept['setting']}")
-        st.markdown(f"**Characters:** {', '.join(concept['characters'])}")
-        st.markdown(f"**Conflict:** {concept['conflict']}")
-
-        # Store in session state so it persists
-        st.session_state["storyteller"] = storyteller
-
-    # Step 2: Generate Beats
-    if "storyteller" in st.session_state:
-        storyteller = st.session_state["storyteller"]
-
-        st.hr()
-
-        # Toggle for critique mode
-        use_critique_mode = st.toggle("Enable critique loop (improvement workflow)", value=False)
-        
-        if use_critique_mode:
-            st.info("💡 **Critique Mode Enabled**: You can now review and improve your prose through iterative feedback loops.")
-
-        # Show outline
-        if storyteller.project.beats:
-            st.markdown("## 📋 Outline")
-            for i, beat in enumerate(storyteller.get_project().beats):
-                status = ""
-                if beat.critique:
-                    status = " ✅ (critiqued)"
-                elif beat.content:
-                    status = " ✍️ (draft)"
-                st.markdown(f"- **{beat.title}**{status}")
-
-        beat_title = st.text_input("2. Enter a beat title (e.g., 'The Meeting')", "")
-        col1, col2 = st.columns([1, 4])
-        with col1:
-            if st.button("Generate Beat", disabled=not beat_title):
-                with st.spinner("Writing prose for this beat..."):
-                    prose = storyteller.generate_beat(beat_title, critique=use_critique_mode)
-                st.success("✍️ Beat written!")
-                # Store in session state
-                st.session_state["storyteller"] = storyteller
-                # Trigger a re-render by using a key
-                st.session_state["last_beat_title"] = beat_title
-
-        # Display the most recently generated beat
-        if "last_beat_title" in st.session_state:
-            last_beat = next((b for b in storyteller.project.beats if b.title == st.session_state["last_beat_title"]), None)
-            if last_beat:
-                st.markdown(f"## {last_beat.title}")
-                st.markdown(last_beat.content)
-
-        # Step 3: Critique and Improve (only if critique mode is enabled)
-        if use_critique_mode and len(storyteller.project.beats) > 0:
-            st.hr()
-            st.markdown("## 📝 Critique & Improve")
-
-            # Select beat to critique
-            beat_options = [(i, beat.title) for i, beat in enumerate(storyteller.project.beats)]
-            selected_idx = st.selectbox(
-                "Select a beat to critique",
-                options=[i for i, _ in beat_options],
-                format_func=lambda x: beat_options[x][1]
-            )
-
-            # Show current beat content
-            current_beat = storyteller.project.beats[selected_idx]
-            st.markdown(f"### Current: {current_beat.title}")
-            st.markdown(current_beat.content)
-
-            # Critique button
-            if not current_beat.critique:
-                if st.button("🎯 Generate Critique"):
-                    with st.spinner("Analyzing prose..."):
-                        critique_data = storyteller.critique_beat(selected_idx)
-                    st.success("📝 Critique generated!")
-                    st.session_state["storyteller"] = storyteller
-                    st.session_state["last_critique"] = critique_data
-                    st.rerun()
-
-            # Show existing critique
-            if current_beat.critique:
-                st.markdown("### 📊 Critique Analysis")
-                if isinstance(current_beat.critique, dict):
-                    st.markdown(f"**Overall Rating:** {current_beat.critique.get('overall_rating', 'N/A')}/10")
-                    if 'strengths' in current_beat.critique:
-                        st.markdown("**Strengths:**")
-                        st.markdown(current_beat.critique['strengths'])
-                    if 'weaknesses' in current_beat.critique:
-                        st.markdown("**Weaknesses:**")
-                        st.markdown(current_beat.critique['weaknesses'])
-                    if 'suggestions' in current_beat.critique:
-                        st.markdown("**Suggestions:**")
-                        st.markdown(current_beat.critique['suggestions'])
-                else:
-                    st.markdown(current_beat.critique)
-
-                # Focus areas for improvement
-                focus_areas = st.text_area(
-                    "What would you like to focus on improving?",
-                    placeholder="e.g., 'Make the dialogue more natural' or 'Add more sensory details to the setting'",
-                    key="focus_areas"
-                )
-
-                if st.button("✨ Improve Beat"):
-                    if focus_areas:
-                        with st.spinner("Rewriting with improvements..."):
-                            improved = storyteller.improve_beat(selected_idx, str(current_beat.critique), focus_areas)
-                        st.success("✨ Beat improved!")
-                        st.session_state["storyteller"] = storyteller
-                        st.rerun()
-                    else:
-                        st.warning("Please describe what you want to improve.")
-
-        st.hr()
-
-        # Step 4: Add Facts for Continuity
-        st.markdown("## 📖 Story Bible (Facts)")
-        fact_key = st.text_input("Add a narrative fact (key)", "")
-        fact_value = st.text_input("Add a narrative fact (value)", "")
-        if st.button("Add Fact", disabled=not fact_key or not fact_value):
-            storyteller.add_fact(fact_key, fact_value)
-            st.success(f"📖 Fact added: {fact_key} = {fact_value}")
-            st.session_state["storyteller"] = storyteller
+            st.success("Concept generated!")
+            st.session_state["concept_generated"] = True
             st.rerun()
 
-        # Show facts
-        if storyteller.project.bible.facts:
-            for fact in storyteller.project.bible.facts:
-                st.markdown(f"- **{fact['key']}:** {fact['value']}")
-
-        st.hr()
-
-        # Step 5: View Full Story
-        st.markdown("## 📄 Full Story")
+    if st.session_state.get("concept_generated"):
         project = storyteller.get_project()
-        if project.beats:
-            for beat in project.beats:
-                st.markdown(f"### {beat.title}")
-                st.markdown(beat.content)
-                if beat.critique:
-                    st.markdown("*Critique available*")
-                st.markdown("---")
+        st.markdown(f"### Concept: {project.concept}")
 
-        # Export
-        if st.button("Export as JSON"):
-            st.json(project.dict(by_alias=False))
-            st.download_button(
-                label="Download JSON",
-                data=project.json(by_alias=False, indent=2),
-                file_name="storyteller_project.json",
-                mime="application/json"
-            )
+        st.divider()
+        st.subheader("📋 Outline & Prose")
+        
+        for i, beat in enumerate(project.beats):
+            with st.expander(f"Beat {i+1}: {beat.title}", expanded=True):
+                st.write(beat.content)
+                
+                if enable_critique:
+                    st.divider()
+                    st.markdown("#### 🛠 Refinement Tools")
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button(f"Critique Beat {i+1}", key=f"crit_{i}"):
+                            with st.spinner("Critiquing..."):
+                                critique = storyteller.critique_beat(i)
+                                st.session_state[f"critique_{i}"] = critique
+                                st.rerun()
+                    
+                    if f"critique_{i}" in st.session_state:
+                        crit = st.session_state[f"critique_{i}"]
+                        st.info(f"**Rating: {crit.get('overall_rating', '?')}/10**")
+                        st.write(f"**Strengths:** {crit.get('strengths', '')}")
+                        st.write(f"**Weaknesses:** {crit.get('weaknesses', '')}")
+                        st.write(f"**Suggestions:** {crit.get('suggestions', '')}")
+                        with col2:
+                            focus = st.text_input("Focus areas (e.g. 'more tension')", key=f"focus_{i}")
+                            if st.button(f"Improve Beat {i+1}", key=f"imp_{i}"):
+                                with st.spinner("Rewriting..."):
+                                    storyteller.improve_beat(i, str(crit), focus)
+                                    st.rerun()
 
+                    with st.expander("Pin Passages (Keep these constant)"):
+                        p_text = st.text_input("Text to pin", key=f"ptext_{i}")
+                        p_purp = st.text_input("Purpose", key=f"ppurp_{i}")
+                        if st.button("Pin Passage", key=f"ppin_{i}"):
+                            storyteller.add_pinned_passage(i, p_text, p_purp)
+                            st.rerun()
+                        for p_idx, p in enumerate(beat.pinned_passages):
+                            st.text(f"📌 '{p['text']}' ({p['purpose']})")
+                            if st.button("Remove", key=f"premove_{i}_{p_idx}"):
+                                beat.pinned_passages.pop(p_idx)
+                                st.rerun()
+
+        st.divider()
+        st.subheader("Add New Beat")
+        new_beat_title = st.text_input("New beat title", key="new_beat_input")
+        if st.button("Add Beat", key="add_beat_btn"):
+            if new_beat_title:
+                with st.spinner("Generating beat..."):
+                    storyteller.generate_beat(new_beat_title)
+                st.rerun()
+
+        st.divider()
+        st.subheader("📖 Story Bible")
+        
+        st.markdown("#### 🚫 Prohibited Elements (Global Avoidance)")
+        pro_col1, pro_col2 = st.columns([3, 1])
+        with pro_col1:
+            new_prohibited = st.text_input("Add a name/phrase to prohibit (e.g. 'Elara')")
+        with pro_col2:
+            if st.button("Prohibit"):
+                if new_prohibited:
+                    storyteller.add_prohibited_element(new_prohibited)
+                    st.rerun()
+        
+        if project.bible.prohibited_elements:
+            st.caption("Currently Prohibited:")
+            for item in project.bible.prohibited_elements:
+                st.markdown(f"- `{item}`")
+            if st.button("Clear Prohibited List"):
+                project.bible.prohibited_elements = []
+                st.rerun()
+
+        st.divider()
+        st.markdown("#### 📝 Narrative Facts")
+        c1, c2 = st.columns(2)
+        with c1:
+            f_key = st.text_input("Fact Key (e.g. 'Character Name')")
+        with c2:
+            f_val = st.text_input("Fact Value (e.g. 'Elena')")
+        if st.button("Add Fact"):
+            storyteller.add_fact(f_key, f_val)
+            st.rerun()
+        for fact in project.bible.facts:
+            st.text(f"{fact['key']}: {fact['value']}")
+
+        st.divider()
+        if st.button("Export Project (JSON)"):
+            st.download_button("Download", project.json(), "story.json", "application/json")
 
 if __name__ == "__main__":
     main()

@@ -5,6 +5,14 @@ Review the following prose and provide constructive criticism
 focused on: clarity, emotional impact, sensory details, pacing, and show-don't-tell.
 Return structured JSON with keys: overall_rating (1-10), strengths, weaknesses, suggestions.
 
+## Pinned Passages
+
+When reviewing prose that includes pinned passages (marked with "PINNED PASSAGES:" in the context), 
+be aware that these exact phrases must be preserved during any rewrite. The critique should focus 
+on improving surrounding text while maintaining these key elements.
+
+## Critique Guidelines
+
 ## Critique Guidelines
 
 ### What to Evaluate

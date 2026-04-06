@@ -40,6 +40,18 @@ class TestStoryProject:
         assert "CRITIQUE" in context
         assert "The Meeting" in context
 
+    def test_context_contains_pinned_passages(self):
+        project = StoryProject(concept="A spy story")
+        beat = Beat(
+            title="The Meeting",
+            content="They met in a cafe",
+            pinned_passages=[{"text": "Elena", "purpose": "Character name"}]
+        )
+        project.beats.append(beat)
+        context = project.get_context()
+        assert "PINNED PASSAGES" in context
+        assert "Elena" in context
+
     def test_add_fact_to_bible(self):
         project = StoryProject()
         project.bible.facts.append({"key": "Location", "value": "Paris"})
@@ -190,6 +202,112 @@ class TestStoryteller:
         with pytest.raises(ValueError):
             storyteller.improve_beat(0, "Critique", "Focus")
 
+    def test_add_pinned_passage(self):
+        """Test that pinned passages can be added to beats."""
+        storyteller = Storyteller("sk-fake")
+        
+        # Add a beat first
+        original_call = storyteller._call_ai
+        
+        def mock_call(prompt, max_tokens):
+            return "Initial prose"
+        
+        storyteller._call_ai = mock_call
+        storyteller.generate_beat("First Beat")
+        
+        # Add a pinned passage
+        storyteller.add_pinned_passage(0, "Elena", "Main character name")
+        
+        assert len(storyteller.project.beats[0].pinned_passages) == 1
+        assert storyteller.project.beats[0].pinned_passages[0]["text"] == "Elena"
+        assert storyteller.project.beats[0].pinned_passages[0]["purpose"] == "Main character name"
+
+    def test_add_multiple_pinned_passages(self):
+        """Test that multiple pinned passages can be added."""
+        storyteller = Storyteller("sk-fake")
+        
+        original_call = storyteller._call_ai
+        
+        def mock_call(prompt, max_tokens):
+            return "Initial prose"
+        
+        storyteller._call_ai = mock_call
+        storyteller.generate_beat("First Beat")
+        
+        storyteller.add_pinned_passage(0, "Elena", "Character name")
+        storyteller.add_pinned_passage(0, "The Whispering Forest", "Setting")
+        
+        assert len(storyteller.project.beats[0].pinned_passages) == 2
+        assert storyteller.project.beats[0].pinned_passages[0]["text"] == "Elena"
+        assert storyteller.project.beats[0].pinned_passages[1]["text"] == "The Whispering Forest"
+
+    def test_remove_pinned_passage(self):
+        """Test that pinned passages can be removed."""
+        storyteller = Storyteller("sk-fake")
+        
+        original_call = storyteller._call_ai
+        
+        def mock_call(prompt, max_tokens):
+            return "Initial prose"
+        
+        storyteller._call_ai = mock_call
+        storyteller.generate_beat("First Beat")
+        
+        storyteller.add_pinned_passage(0, "Elena", "Character name")
+        storyteller.add_pinned_passage(0, "Forest", "Setting")
+        
+        # Remove the first passage
+        storyteller.remove_pinned_passage(0, 0)
+        
+        assert len(storyteller.project.beats[0].pinned_passages) == 1
+        assert storyteller.project.beats[0].pinned_passages[0]["text"] == "Forest"
+
+    def test_improve_beat_preserves_pinned_passages(self):
+        """Test that pinned passages are included in the improvement prompt."""
+        storyteller = Storyteller("sk-fake")
+        
+        original_call = storyteller._call_ai
+        
+        def mock_call(prompt, max_tokens):
+            return "Initial prose"
+        
+        storyteller._call_ai = mock_call
+        storyteller.generate_beat("First Beat")
+        
+        # Add pinned passage
+        storyteller.add_pinned_passage(0, "Elena", "Character name")
+        
+        # Mock critique call
+        def mock_critique(prompt, max_tokens):
+            return {
+                "overall_rating": 7,
+                "strengths": "Good pacing",
+                "weaknesses": "Weak dialogue",
+                "suggestions": "Improve dialogue"
+            }
+        
+        storyteller._call_ai = mock_critique
+        storyteller.critique_beat(0)
+        
+        # Track the prompt used in improvement call
+        improvement_prompt = None
+        
+        def mock_improvement(prompt, max_tokens):
+            nonlocal improvement_prompt
+            improvement_prompt = prompt
+            return "Improved prose"
+        
+        storyteller._call_ai = mock_improvement
+        
+        # Improve with pinned passages
+        storyteller.improve_beat(0, "Weak dialogue", "Make dialogue better")
+        
+        # Check that pinned passage is in the prompt
+        assert improvement_prompt is not None
+        assert "Elena" in improvement_prompt
+        assert "PINNED PASSAGES" in improvement_prompt
+        assert "Character name" in improvement_prompt
+
 
 class TestBeat:
     def test_beat_creation(self):
@@ -198,6 +316,7 @@ class TestBeat:
         assert beat.content == "Test content"
         assert beat.id == ""
         assert beat.critique == ""
+        assert beat.pinned_passages == []
 
     def test_beat_with_id(self):
         beat = Beat(title="Test Beat", content="Test content", id="test_beat_1")
@@ -210,6 +329,16 @@ class TestBeat:
             critique={"rating": 8, "feedback": "Good"}
         )
         assert beat.critique == {"rating": 8, "feedback": "Good"}
+
+    def test_beat_with_pinned_passages(self):
+        beat = Beat(
+            title="Test Beat",
+            content="Test content",
+            pinned_passages=[{"text": "Elena", "purpose": "Character name"}]
+        )
+        assert len(beat.pinned_passages) == 1
+        assert beat.pinned_passages[0]["text"] == "Elena"
+        assert beat.pinned_passages[0]["purpose"] == "Character name"
 
     def test_beat_dict_method(self):
         beat = Beat(title="Test Beat", content="Test content", id="test")
@@ -226,6 +355,15 @@ class TestBeat:
         )
         result = beat.dict()
         assert result["critique"] == {"rating": 8}
+
+    def test_beat_dict_includes_pinned_passages(self):
+        beat = Beat(
+            title="Test Beat",
+            content="Test content",
+            pinned_passages=[{"text": "Elena", "purpose": "Character"}]
+        )
+        result = beat.dict()
+        assert result["pinned_passages"] == [{"text": "Elena", "purpose": "Character"}]
 
 
 class TestPromptLoading:

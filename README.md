@@ -103,11 +103,20 @@ Initial Draft → Generate Critique → Focus Areas → Improve Beat → Repeat
 - Track the evolution of your writing
 - Maintain continuity across revisions
 
+### 📌 Preserving Key Elements with Pinned Passages
+
+When refining prose, you may have specific phrases, character names, or important details that must remain unchanged. The **pinned passages** feature lets you preserve these elements:
+
+1. **Pin important text** - After generating a beat, add text to the "Preserve These Passages" section
+2. **Specify purpose** - Optionally explain why the passage is important (e.g., "character name", "key setting detail")
+3. **Improve with safety** - When you improve the beat, the AI will preserve all pinned passages
+
 **Example Flow:**
-1. Generate a beat: "The hero enters the castle"
-2. Generate critique: "The prose is flat, needs more sensory details"
-3. Focus areas: "Describe the castle's atmosphere and the hero's nervousness"
-4. Improve: "The iron door groaned as it opened, releasing a breath of stale, ancient air. The hero's heart pounded against their ribs as they stepped into the cavernous hall, shadows stretching like grasping fingers."
+```
+Original: "Elena stepped into the forest, her sword gleaming"
+Pinned: "Elena" (Purpose: Main character name)
+Improved: "Elena stepped into the whispering forest, her silver sword catching the moonlight"
+```
 
 ## 🛠️ Development
 
