@@ -13,8 +13,8 @@ class Beat(BaseModel):
     critique: Optional[Dict[str, Any]] = None
     pinned_passages: List[Dict[str, str]] = Field(default_factory=list)
 
-    def dict(self, **kwargs):
-        return super().dict(by_alias=False, **kwargs)
+    def model_dump(self, **kwargs):
+        return super().model_dump(**kwargs)
 
 
 class StoryBible(BaseModel):
@@ -76,8 +76,10 @@ PROMPT_CRITIQUE = load_prompt("critique")
 class Storyteller:
     """All-in-one story creation service."""
 
-    def __init__(self, api_key: str):
+    def __init__(self, api_key: str, base_url: Optional[str] = None, model_name: str = "gpt-4o"):
         self.api_key = api_key
+        self.base_url = base_url
+        self.model_name = model_name
         self.project: StoryProject = StoryProject()
 
     def generate_concept(self, seed: str) -> Dict:
@@ -95,28 +97,18 @@ class Storyteller:
         prompt = f"{PROMPT_BEAT}\n\nContext:\n{context}\n\nBeat: {title}"
         response = self._call_ai(prompt=prompt, max_tokens=1000)
         
-        prose = response.get("prose", response.get("content", ""))
-        if not prose and isinstance(response, dict):
+        # If response is a dict, try to extract prose/content.
+        if isinstance(response, dict):
+            prose = response.get("prose", response.get("content", ""))
+        else:
             prose = str(response)
-        elif not prose:
-            prose = str(response)
+
+        if not prose:
+            prose = ""
 
         beat = Beat(title=title, content=prose, id=title.lower().replace(" ", "_"))
         self.project.beats.append(beat)
         return prose
-
-    def critique_beat(self, beat_index: int) -> Dict:
-        """Step 3: Critique an existing beat."""
-        if not (0 <= beat_index < len(self.project.beats)):
-            raise ValueError("Invalid beat index")
-        
-        beat = self.project.beats[beat_index]
-        context = self.project.get_context()
-        prompt = f"{PROMPT_CRITIQUE}\n\nContext:\n{context}\n\nProse to critique:\n{beat.content}"
-        
-        critique_data = self._call_ai(prompt=prompt, max_tokens=500)
-        beat.critique = critique_data
-        return critique_data
 
     def improve_beat(self, beat_index: int, critique_text: str, focus_areas: str) -> str:
         """Step 4: Rewrite a beat based on critique and user focus."""
@@ -135,11 +127,14 @@ class Storyteller:
         )
         
         response = self._call_ai(prompt=prompt, max_tokens=1000)
-        new_prose = response.get("prose", response.get("content", ""))
-        if not new_prose and isinstance(response, dict):
+        
+        if isinstance(response, dict):
+            new_prose = response.get("prose", response.get("content", ""))
+        else:
             new_prose = str(response)
-        elif not new_prose:
-            new_prose = str(response)
+
+        if not new_prose:
+            new_prose = ""
 
         beat.content = new_prose
         return new_prose
@@ -150,6 +145,15 @@ class Storyteller:
             raise ValueError("Invalid beat index")
         self.project.beats[beat_index].pinned_passages.append({"text": text, "purpose": purpose})
 
+    def remove_pinned_passage(self, beat_index: int, passage_index: int):
+        """Remove a pinned passage from a beat."""
+        if not (0 <= beat_index < len(self.project.beats)):
+            raise ValueError("Invalid beat index")
+        if 0 <= passage_index < len(self.project.beats[beat_index].pinned_passages):
+            self.project.beats[beat_index].pinned_passages.pop(passage_index)
+        else:
+            raise ValueError("Invalid passage index")
+
     def add_fact(self, key: str, value: str):
         """Add a narrative fact for continuity."""
         self.project.bible.facts.append({"key": key, "value": value})
@@ -159,43 +163,58 @@ class Storyteller:
         if element and element not in self.project.bible.prohibited_elements:
             self.project.bible.prohibited_elements.append(element)
 
+    def remove_prohibited_element(self, element: str):
+        """Remove a global element from avoidance list."""
+        if element in self.project.bible.prohibited_elements:
+            self.project.bible.prohibited_elements.remove(element)
+
     def get_project(self) -> StoryProject:
         return self.project
 
     def _call_ai(self, prompt: str, max_tokens: int) -> Dict:
         import json
         import time
+        import re
         from openai import OpenAI
 
-        client = OpenAI(api_key=self.api_key)
+        client = OpenAI(api_key=self.api_key, base_url=self.base_url)
         for attempt in range(3):
             try:
                 response = client.chat.completions.create(
-                    model="gpt-4o",
+                    model=self.model_name,
                     messages=[
-                        {"role": "system", "content": "You are a helpful story writing assistant."},
+                        {"role": "system", "content": "You are a helpful story writing assistant. If you are providing JSON, wrap it in ```json blocks."},
                         {"role": "user", "content": prompt},
                     ],
                     max_tokens=max_tokens,
                     temperature=0.8,
                 )
                 content = response.choices[0].message.content
+                if not content:
+                    return {"prose": "", "content": ""}
+
+                # 1. Try to find JSON within the content using regex
+                # This is much more robust than manual splitting
+                json_match = re.search(r"```json\s*(.*?)\s*```", content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(1)
+                else:
+                    # Fallback: try to find anything that looks like a JSON object
+                    json_match_alt = re.search(r"(\{.*\})", content, re.DOTALL)
+                    if json_match_alt:
+                        json_str = json_match_alt.group(1)
+                    else:
+                        json_str = None
+
+                if json_str:
+                    try:
+                        return json.loads(json_str)
+                    except json.JSONDecodeError:
+                        # If JSON parsing fails, we treat the whole content as prose
+                        pass
                 
-                if "```json" in content:
-                    content = content.split("```json")[1].split("```")[0].strip()
-                elif "```" in content:
-                    parts = content.split("```")
-                    if len(parts) >= 3:
-                        try:
-                            json.loads(parts[1].strip())
-                            content = parts[1].strip()
-                        except:
-                            content = parts[1].strip()
-                
-                try:
-                    return json.loads(content)
-                except json.JSONDecodeError:
-                    return {"prose": content, "content": content}
+                # 2. If no JSON found or parsing failed, return as prose
+                return {"prose": content, "content": content}
 
             except Exception as e:
                 if attempt == 2:
@@ -224,7 +243,13 @@ def main():
         st.warning("Please enter your OpenAI API key in the sidebar.")
         return
 
-    if "storyteller" not in st.session_state:
+    # Handle API Key changes
+    if "storyteller" in st.session_state:
+        if st.session_state["storyteller"].api_key != api_key:
+            st.session_state["storyteller"] = Storyteller(api_key)
+            st.success("API Key updated!")
+            st.rerun()
+    else:
         st.session_state["storyteller"] = Storyteller(api_key)
     
     storyteller = st.session_state["storyteller"]
@@ -240,6 +265,14 @@ def main():
     if st.session_state.get("concept_generated"):
         project = storyteller.get_project()
         st.markdown(f"### Concept: {project.concept}")
+
+        # Developer Mode: Context Visibility
+        with st.sidebar:
+            show_context = st.checkbox("Show Raw AI Context (Dev Mode)")
+        
+        if show_context:
+            with st.expander("🔍 Raw AI Context (Continuity Engine Output)", expanded=True):
+                st.code(project.get_context(), language="text")
 
         st.divider()
         st.subheader("📋 Outline & Prose")
@@ -278,11 +311,14 @@ def main():
                         if st.button("Pin Passage", key=f"ppin_{i}"):
                             storyteller.add_pinned_passage(i, p_text, p_purp)
                             st.rerun()
-                        for p_idx, p in enumerate(beat.pinned_passages):
-                            st.text(f"📌 '{p['text']}' ({p['purpose']})")
-                            if st.button("Remove", key=f"premove_{i}_{p_idx}"):
-                                beat.pinned_passages.pop(p_idx)
-                                st.rerun()
+                        
+                        if beat.pinned_passages:
+                            st.markdown("---")
+                            for p_idx, p in enumerate(beat.pinned_passages):
+                                st.text(f"📌 '{p['text']}' ({p['purpose']})")
+                                if st.button("Remove", key=f"premove_{i}_{p_idx}"):
+                                    storyteller.remove_pinned_passage(i, p_idx)
+                                    st.rerun()
 
         st.divider()
         st.subheader("Add New Beat")
@@ -309,7 +345,13 @@ def main():
         if project.bible.prohibited_elements:
             st.caption("Currently Prohibited:")
             for item in project.bible.prohibited_elements:
-                st.markdown(f"- `{item}`")
+                col_p1, col_p2 = st.columns([4, 1])
+                with col_p1:
+                    st.markdown(f"- `{item}`")
+                with col_p2:
+                    if st.button("Remove", key=f"premove_glob_{item}"):
+                        storyteller.remove_prohibited_element(item)
+                        st.rerun()
             if st.button("Clear Prohibited List"):
                 project.bible.prohibited_elements = []
                 st.rerun()

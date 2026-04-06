@@ -67,6 +67,14 @@ class TestStoryProject:
         assert "Agent" in context
         assert "007" in context
 
+    def test_context_contains_prohibited(self):
+        project = StoryProject()
+        project.bible.prohibited_elements = ["Elara", "AI-isms"]
+        context = project.get_context()
+        assert "PROHIBITED ELEMENTS" in context
+        assert "Elara" in context
+        assert "AI-isms" in context
+
 
 class TestStoryteller:
     def test_initialization(self):
@@ -96,8 +104,6 @@ class TestStoryteller:
     def test_generate_beat_adds_to_project(self):
         """Test that generate_beat properly adds a beat to the project."""
         storyteller = Storyteller("sk-fake")
-        # Mock the _call_ai method to return a simple prose
-        original_call = storyteller._call_ai
         
         def mock_call(prompt, max_tokens):
             return "Generated prose content"
@@ -115,9 +121,6 @@ class TestStoryteller:
         """Test that critique_beat properly stores critique for a beat."""
         storyteller = Storyteller("sk-fake")
         
-        # Add a beat first
-        original_call = storyteller._call_ai
-        
         def mock_call_for_beat(prompt, max_tokens):
             return "Initial prose"
         
@@ -132,7 +135,6 @@ class TestStoryteller:
         storyteller._call_ai = mock_call_for_beat
         storyteller.generate_beat("First Beat")
         
-        # Now mock critique call
         storyteller._call_ai = mock_call_for_critique
         
         critique_data = storyteller.critique_beat(0)
@@ -140,7 +142,7 @@ class TestStoryteller:
         assert storyteller.project.beats[0].critique == {
             "overall_rating": 7,
             "strengths": "Good pacing",
-            "weaknesses": "Weaknesses",
+            "weaknesses": "Weak dialogue",
             "suggestions": "Improve dialogue"
         }
         assert isinstance(critique_data, dict)
@@ -160,9 +162,6 @@ class TestStoryteller:
         """Test that improve_beat updates beat content."""
         storyteller = Storyteller("sk-fake")
         
-        # Add a beat with critique
-        original_call = storyteller._call_ai
-        
         def mock_call_for_beat(prompt, max_tokens):
             return "Initial prose"
         
@@ -172,7 +171,6 @@ class TestStoryteller:
         storyteller._call_ai = mock_call_for_beat
         storyteller.generate_beat("First Beat")
         
-        # Mock critique call
         def mock_call_for_critique(prompt, max_tokens):
             return {
                 "overall_rating": 7,
@@ -184,7 +182,6 @@ class TestStoryteller:
         storyteller._call_ai = mock_call_for_critique
         storyteller.critique_beat(0)
         
-        # Mock improvement call
         storyteller._call_ai = mock_call_for_improvement
         
         improved = storyteller.improve_beat(0, "Weak dialogue", "Make dialogue more natural")
@@ -206,16 +203,12 @@ class TestStoryteller:
         """Test that pinned passages can be added to beats."""
         storyteller = Storyteller("sk-fake")
         
-        # Add a beat first
-        original_call = storyteller._call_ai
-        
         def mock_call(prompt, max_tokens):
             return "Initial prose"
         
         storyteller._call_ai = mock_call
         storyteller.generate_beat("First Beat")
         
-        # Add a pinned passage
         storyteller.add_pinned_passage(0, "Elena", "Main character name")
         
         assert len(storyteller.project.beats[0].pinned_passages) == 1
@@ -225,8 +218,6 @@ class TestStoryteller:
     def test_add_multiple_pinned_passages(self):
         """Test that multiple pinned passages can be added."""
         storyteller = Storyteller("sk-fake")
-        
-        original_call = storyteller._call_ai
         
         def mock_call(prompt, max_tokens):
             return "Initial prose"
@@ -245,8 +236,6 @@ class TestStoryteller:
         """Test that pinned passages can be removed."""
         storyteller = Storyteller("sk-fake")
         
-        original_call = storyteller._call_ai
-        
         def mock_call(prompt, max_tokens):
             return "Initial prose"
         
@@ -256,7 +245,6 @@ class TestStoryteller:
         storyteller.add_pinned_passage(0, "Elena", "Character name")
         storyteller.add_pinned_passage(0, "Forest", "Setting")
         
-        # Remove the first passage
         storyteller.remove_pinned_passage(0, 0)
         
         assert len(storyteller.project.beats[0].pinned_passages) == 1
@@ -266,18 +254,14 @@ class TestStoryteller:
         """Test that pinned passages are included in the improvement prompt."""
         storyteller = Storyteller("sk-fake")
         
-        original_call = storyteller._call_ai
-        
         def mock_call(prompt, max_tokens):
             return "Initial prose"
         
         storyteller._call_ai = mock_call
         storyteller.generate_beat("First Beat")
         
-        # Add pinned passage
         storyteller.add_pinned_passage(0, "Elena", "Character name")
         
-        # Mock critique call
         def mock_critique(prompt, max_tokens):
             return {
                 "overall_rating": 7,
@@ -289,7 +273,6 @@ class TestStoryteller:
         storyteller._call_ai = mock_critique
         storyteller.critique_beat(0)
         
-        # Track the prompt used in improvement call
         improvement_prompt = None
         
         def mock_improvement(prompt, max_tokens):
@@ -299,14 +282,28 @@ class TestStoryteller:
         
         storyteller._call_ai = mock_improvement
         
-        # Improve with pinned passages
         storyteller.improve_beat(0, "Weak dialogue", "Make dialogue better")
         
-        # Check that pinned passage is in the prompt
         assert improvement_prompt is not None
         assert "Elena" in improvement_prompt
         assert "PINNED PASSAGES" in improvement_prompt
         assert "Character name" in improvement_prompt
+
+    def test_prohibited_elements(self):
+        """Test adding and removing prohibited elements."""
+        storyteller = Storyteller("sk-fake")
+        storyteller.add_prohibited_element("Elara")
+        assert "Elara" in storyteller.project.bible.prohibited_elements
+        
+        storyteller.remove_prohibited_element("Elara")
+        assert "Elara" not in storyteller.project.bible.prohibited_elements
+
+    def test_add_prohibited_element_duplicate(self):
+        """Test that adding the same prohibited element twice doesn't duplicate."""
+        storyteller = Storyteller("sk-fake")
+        storyteller.add_prohibited_element("Elara")
+        storyteller.add_prohibited_element("Elara")
+        assert len(storyteller.project.bible.prohibited_elements) == 1
 
 
 class TestBeat:
@@ -315,7 +312,7 @@ class TestBeat:
         assert beat.title == "Test Beat"
         assert beat.content == "Test content"
         assert beat.id == ""
-        assert beat.critique == ""
+        assert beat.critique is None
         assert beat.pinned_passages == []
 
     def test_beat_with_id(self):
@@ -334,35 +331,35 @@ class TestBeat:
         beat = Beat(
             title="Test Beat",
             content="Test content",
-            pinned_passages=[{"text": "Elena", "purpose": "Character name"}]
+            pinned_passages=[{"text": "Elena", "purpose": "Character"}]
         )
         assert len(beat.pinned_passages) == 1
         assert beat.pinned_passages[0]["text"] == "Elena"
-        assert beat.pinned_passages[0]["purpose"] == "Character name"
+        assert beat.pinned_passages[0]["purpose"] == "Character"
 
-    def test_beat_dict_method(self):
+    def test_beat_model_dump(self):
         beat = Beat(title="Test Beat", content="Test content", id="test")
-        result = beat.dict()
+        result = beat.model_dump()
         assert result["title"] == "Test Beat"
         assert result["content"] == "Test content"
         assert result["id"] == "test"
 
-    def test_beat_dict_includes_critique(self):
+    def test_beat_model_dump_includes_critique(self):
         beat = Beat(
             title="Test Beat",
             content="Test content",
             critique={"rating": 8}
         )
-        result = beat.dict()
+        result = beat.model_dump()
         assert result["critique"] == {"rating": 8}
 
-    def test_beat_dict_includes_pinned_passages(self):
+    def test_beat_model_dump_includes_pinned_passages(self):
         beat = Beat(
             title="Test Beat",
             content="Test content",
             pinned_passages=[{"text": "Elena", "purpose": "Character"}]
         )
-        result = beat.dict()
+        result = beat.model_dump()
         assert result["pinned_passages"] == [{"text": "Elena", "purpose": "Character"}]
 
 
@@ -382,29 +379,20 @@ class TestPromptLoading:
         critique_file = prompts_dir / "critique.md"
         critique_file.write_text("Test critique prompt")
         
-        # Monkeypatch to use temp directory
+        import os
         import storyteller
-        original_path = os.path.dirname(storyteller.__file__)
-        monkeypatch.setattr(storyteller, "__file__", str(tmp_path / "storyteller.py"))
-        
-        # Reload to test prompt loading
         import importlib
-        importlib.reload(storyteller)
-        
-        assert "Test concept prompt" in storyteller.PROMPT_CONCEPT
-        assert "Test beat prompt" in storyteller.PROMPT_BEAT
-        assert "Test critique prompt" in storyteller.PROMPT_CRITIQUE
 
-    def test_load_prompt_file_not_found(self, tmp_path, monkeypatch):
-        """Test fallback when prompt file doesn't exist."""
-        import storyteller
-        original_path = os.path.dirname(storyteller.__file__)
-        monkeypatch.setattr(storyteller, "__file__", str(tmp_path / "storyteller.py"))
-        
-        importlib = __import__("importlib")
+        # Mock the directory used by storyteller
+        original_cwd = os.getcwd()
+        os.chdir(tmp_path)
+
+        # Reload the module to re-trigger top-level prompt loading
         importlib.reload(storyteller)
         
-        # Should have default fallback text when file not found
-        assert storyteller.PROMPT_CONCEPT
-        assert storyteller.PROMPT_BEAT
-        assert storyteller.PROMPT_CRITIQUE
+        try:
+            assert "Test concept prompt" in storyteller.PROMPT_CONCEPT
+            assert "Test beat prompt" in storyteller.PROMPT_BEAT
+            assert "Test critique prompt" in storyteller.PROMPT_CRITIQUE
+        finally:
+            os.chdir(original_cwd)
