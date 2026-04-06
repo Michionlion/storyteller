@@ -36,9 +36,9 @@ ENV/
 .DS_Store
 Thumbs.db
 
-# Streamlit
-.streamlit/
-*.streamlit
+# Streamlit (keep config files for reproducibility)
+# .streamlit/
+# *.streamlit
 
 # Logs
 *.log
@@ -51,3 +51,4 @@ Thumbs.db
 *.json
 *.md
 !README.md
+!prompts/*.md
